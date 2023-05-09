@@ -56,7 +56,7 @@ class AdView(MethodView):
                     "title": ad.title,
                     "description": ad.description,
                     "owner": ad.owner,
-                    "creation_date": ad.creation_date.isoformat(),
+                    "creation_date": ad.creation_date.isoformat(timespec='hours'),
                 }
             )
 
@@ -91,7 +91,7 @@ class AdView(MethodView):
                     "title": ad.title,
                     "description": ad.description,
                     "owner": ad.owner,
-                    "creation_date": ad.creation_date.isoformat(),
+                    "creation_date": ad.creation_date.isoformat(timespec='hours'),
                 }
             )
 

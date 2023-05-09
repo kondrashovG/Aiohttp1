@@ -9,12 +9,12 @@ import requests
 #     },
 # )
 # response = requests.patch(
-#     "http://127.0.0.1:5000/ad/9", json={'description': 'Отдам щенков в добрые руки'}
+#     "http://127.0.0.1:5000/ad/2", json={'description': 'Отдам рыбку в добрые руки'}
 # )
 response = requests.get(
-    "http://127.0.0.1:5000/ad/1",
+    "http://127.0.0.1:5000/ad/10",
 )
 # response = requests.delete(
-#     "http://127.0.0.1:5000/ad/1",
+#     "http://127.0.0.1:5000/ad/2",
 # )
 print(response.json())
