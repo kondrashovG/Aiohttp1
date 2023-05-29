@@ -1,26 +1,34 @@
-from hashlib import md5
-from flask import Flask, jsonify, request
-from flask.views import MethodView
-from models import Session, Ad
-from schema import CreateAd, PatchAd, VALIDATION_CLASS
+import json
+from aiohttp import web
 from pydantic import ValidationError
+
+from models import engine, Base, Session, Ad
 from sqlalchemy.exc import IntegrityError
 
-app = Flask("app")
+from schema import VALIDATION_CLASS, CreateAd, PatchAd
+
+
+async def orm_context(app):
+    print("START")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    await engine.dispose()
+    print('SHUT DOWN')
+
+
+@web.middleware
+async def session_middleware(request: web.Request, handler):
+    async with Session() as session:
+        request['session'] = session
+        response = await handler(request)
+        return response
 
 
 class HttpError(Exception):
     def __init__(self, status_code: int, message: dict | list | str):
         self.status_code = status_code
         self.message = message
-
-
-@app.errorhandler(HttpError)
-def http_error_handler(error: HttpError):
-    error_message = {"status": "error", "description": error.message}
-    response = jsonify(error_message)
-    response.status_code = error.status_code
-    return response
 
 
 def validate_json(json_data: dict, validation_model: VALIDATION_CLASS):
@@ -30,85 +38,90 @@ def validate_json(json_data: dict, validation_model: VALIDATION_CLASS):
     except ValidationError as err:
         raise HttpError(400, message=err.errors())
     return model_obj_dict
-
-
-def get_ad(session: Session, ad_id: int):
-    ad = session.get(Ad, ad_id)
+async def get_ad(session: Session, ad_id: int) -> Ad:
+    ad = await session.get(Ad, ad_id)
     if ad is None:
-        raise HttpError(404, message="ad doesn't exist")
+        raise web.HTTPNotFound(
+            text=json.dumps({'error': "ad doesn't exist"}),
+            content_type='application/json'
+        )
     return ad
 
 
-def hash_password(password: str):
-    password = password.encode()
-    password_hash = md5(password)
-    password_hash_str = password_hash.hexdigest()
-    return password_hash_str
+class AdView(web.View):
 
-
-class AdView(MethodView):
-    def get(self, ad_id: int):
+    async def get(self, ad_id: int):
         with Session() as session:
-            ad = get_ad(session, ad_id)
-            return jsonify(
+            ad = await get_ad(session, ad_id)
+            return web.json_response(
                 {
                     "id": ad.id,
                     "title": ad.title,
                     "description": ad.description,
                     "owner": ad.owner,
-                    "creation_date": ad.creation_date.isoformat(timespec='hours'),
+                    "creation_date": int(ad.creation_date.timestamp()),
                 }
             )
 
-    def post(self):
-        json_data = validate_json(request.json, CreateAd)
-        # json_data["password"] = hash_password(json_data["password"])
+    async def post(self):
+        json_data = await validate_json(self.request.json, CreateAd)
         with Session() as session:
             ad = Ad(**json_data)
             session.add(ad)
             try:
-                session.commit()
+                await session.commit()
             except IntegrityError:
                 raise HttpError(409, f'{json_data["title"]} с таким заголовком уже есть')
-            return jsonify({"id": ad.id})
+            return web.json_response({"id": ad.id})
 
-    def patch(self, ad_id: int):
-        json_data = validate_json(request.json, PatchAd)
-        # if "password" in json_data:
-        #     json_data["password"] = hash_password(json_data["password"])
+
+    async def patch(self, ad_id: int):
+        json_data = validate_json(self.request.json, PatchAd)
         with Session() as session:
-            ad = get_ad(session, ad_id)
+            ad = await get_ad(session, ad_id)
             for field, value in json_data.items():
                 setattr(ad, field, value)
             session.add(ad)
             try:
-                session.commit()
+                await session.commit()
             except IntegrityError:
                 raise HttpError(409, f'{json_data["title"]} с таким заголовком уже есть')
-            return jsonify(
+            return web.json_response(
                 {
                     "id": ad.id,
                     "title": ad.title,
                     "description": ad.description,
                     "owner": ad.owner,
-                    "creation_date": ad.creation_date.isoformat(timespec='hours'),
+                    "creation_date": ad.creation_date,
+                    # .isoformat(timespec='hours')
                 }
             )
 
-    def delete(self, ad_id: int):
+    async def delete(self, ad_id: int):
         with Session() as session:
-            ad = get_ad(session, ad_id)
-            session.delete(ad)
-            session.commit()
-            return jsonify({"status": "success"})
+            ad = await get_ad(session, ad_id)
+            await session.delete(ad)
+            await session.commit()
+            return web.json_response({"status": "success"})
 
 
-app.add_url_rule(
-    "/ad/<int:ad_id>",
-    view_func=AdView.as_view("with_ad_id"),
-    methods=["GET", "PATCH", "DELETE"],
-)
+async def get_app():
+    app = web.Application()
+    app.add_routes(
+        [
+            web.get("/ad/{ad_id:\d+}", AdView),
+            web.patch("/ad/{ad_id:\d+}", AdView),
+            web.delete("/ad/{ad_id:\d+}", AdView),
+            web.post("/ad/", AdView),
+        ]
+    )
 
-app.add_url_rule("/ad/", view_func=AdView.as_view("create_ad"), methods=["POST"])
-if __name__ == "__main__":
-    app.run()
+    app.cleanup_ctx.append(orm_context)
+    app.middlewares.append(session_middleware)
+
+    return app
+
+
+if __name__ == '__main__':
+    app = get_app()
+    web.run_app(app)
